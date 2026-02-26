@@ -1,0 +1,200 @@
+local M = {}
+
+local board = {}
+local board_Width = 15
+local player = 1
+local score = {p0=0,p1=0}
+
+local function UpdateUpvalues(oldFunc, newFunc)
+    -- 1. 建立旧函数的 Upvalue 映射 (变量名 -> 索引)
+    local oldUpvalues = {}
+    local i = 1
+    while true do
+        local name, value = debug.getupvalue(oldFunc, i)
+        if not name then break end
+        oldUpvalues[name] = i
+        i = i + 1
+    end
+
+    -- 2. 遍历新函数，找到同名的变量，将指针指向旧变量
+    i = 1
+    while true do
+        local name, value = debug.getupvalue(newFunc, i)
+        if not name then break end
+        
+        local oldIndex = oldUpvalues[name]
+        if oldIndex then
+            -- 【核心黑科技】
+            -- 让 newFunc 的第 i 个变量，直接共享 oldFunc 的第 oldIndex 个变量的内存
+            debug.upvaluejoin(newFunc, i, oldFunc, oldIndex)
+        end
+        i = i + 1
+    end
+end
+
+function HotReload(moduleName)
+    -- 1. 获取旧模块（必须要保留它的内存地址！）
+    local oldModule = package.loaded[moduleName]
+    if not oldModule then return require(moduleName) end
+
+    -- 2. 清除缓存，准备加载新代码
+    package.loaded[moduleName] = nil
+    
+    -- 3. 加载新代码到一个临时环境（新 Table）
+    -- 注意：这里产生了一个新 Table，我们只用它来提取函数
+    local newModule = require(moduleName)
+    
+    -- 4. 恢复 package.loaded 指向旧模块 
+    -- (这步很重要，保证外部 require 拿到的还是同一个引用)
+    package.loaded[moduleName] = oldModule
+
+    if newModule then
+        -- 5. 【核心】遍历新模块，把新函数覆盖到旧模块上
+        for k, v in pairs(newModule) do
+            if type(v) == "function" then
+                -- TODO: 这里通常需要处理 Upvalue 迁移 (见下文)
+                UpdateUpvalues(oldModule[k], v) 
+                
+                -- 替换函数逻辑
+                oldModule[k] = v
+            elseif type(v) ~= "function" then
+                -- 对于数据字段，通常保留旧值，还是使用新值？
+                -- 策略A：保留旧值（即不覆盖），防止重置状态
+                -- 策略B：如果你新增了配置字段，需要拷贝过来
+                if oldModule[k] == nil then
+                    oldModule[k] = v
+                end
+            end
+        end
+
+        -- 6. 处理元表更新 (如果有的话)
+        local mt = getmetatable(newModule)
+        if mt then setmetatable(oldModule, mt) end
+    end
+
+    return oldModule
+end
+
+function M.Set_Board_Manager()
+	for i=0,board_Width-1 do
+		board[i] = {}
+		for j=0,board_Width-1 do
+			board[i][j] = 0
+		end
+	end
+	if CS.Board_UI_Manager.Instance ~= nil then
+		CS.Board_UI_Manager.Instance:Set_Board_UI_Manager(board_Width)
+	end
+end
+
+function M.Reset_Board()
+	player = 1
+	for i=0,board_Width-1 do
+		for j=0,board_Width-1 do
+			board[i][j] = 0
+		end
+	end
+end
+
+function M.Reset_Board_UI()
+	if CS.Board_UI_Manager.Instance ~= nil then
+		CS.Board_UI_Manager.Instance:Reset_Board()
+	end
+end
+
+function M.Check_Put_Chess(r,c)
+	if r < 0 or r>= board_Width or c<0 or c>=board_Width then
+		return false
+	end
+	if board[r][c] ~= 0 then
+		return false
+	end
+	return true
+end
+
+function M.Put_Chess(r,c)
+	board[r][c] = player
+end
+
+function M.Change_Player()
+	player = -player
+end
+
+function M.Show_Chess_UI(r,c)
+	if CS.Board_UI_Manager.Instance ~= nil then
+		CS.Board_UI_Manager.Instance:Show_Chess_UI(player,r,c)
+	end
+end
+
+function M.CheckWinner(lastR,lastC)
+	local player_Current = board[lastR][lastC]
+
+	if player_Current == 0 then
+		return 0
+	end
+
+	if M.CountContinuous(lastR,lastC,1,0) >= 5 or
+	   M.CountContinuous(lastR,lastC,0,1) >= 5 or
+	   M.CountContinuous(lastR,lastC,1,1) >= 5 or
+	   M.CountContinuous(lastR,lastC,1,-1) >= 5 then
+	   return player_Current
+	end
+
+	return 0
+end
+
+function M.CountContinuous(r,c,dr,dc)
+	local player_Current = board[r][c]
+	local count = 1
+
+	for i = 1,4 do
+		local nr = r + i*dr
+		local nc = c + i*dc
+		if nr>=0 and nr < board_Width and nc>=0 and nc<board_Width and player_Current==board[nr][nc] then
+			count = count+1
+		else
+			break
+		end
+	end
+
+	for i = 1,4 do
+		local nr = r - i*dr
+		local nc = c - i*dc
+		if nr>=0 and nr < board_Width and nc>=0 and nc<board_Width and player_Current==board[nr][nc] then
+			count = count+1
+		else
+			break
+		end
+	end
+
+	return count
+end
+
+function M.Get_Score(current_Player)
+	if current_Player==1 then
+		return score.p0
+	elseif current_Player==-1 then
+		return score.p1
+	end
+end
+
+function M.Add_Score(current_Player)
+	if current_Player==1 then
+		score.p0 = score.p0+1
+	elseif current_Player==-1 then
+		score.p1 = score.p1+1
+	end
+end
+
+function M.Update_Score_UI(current_Player)
+	if CS.Board_UI_Manager.Instance ~= nil then
+		if current_Player==1 then
+			CS.Board_UI_Manager.Instance:Update_Score_UI(current_Player,score.p0)
+		elseif current_Player==-1 then
+			CS.Board_UI_Manager.Instance:Update_Score_UI(current_Player,score.p1)
+		end
+	end
+end
+
+
+return M
